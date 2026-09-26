@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/borislemeec/jev/internal/typesafe"
 )
@@ -35,16 +36,36 @@ type hookInput struct {
 	ToolInput      map[string]any `json:"tool_input"`
 	CWD            string         `json:"cwd"`
 	TranscriptPath string         `json:"transcript_path"`
+	SessionID      string         `json:"session_id"`
 }
 
 type hookOutput struct {
 	HookSpecificOutput *hookSpecific `json:"hookSpecificOutput,omitempty"`
-	AdditionalContext  string        `json:"additionalContext,omitempty"`
 }
 
+// additionalContext belongs inside hookSpecificOutput for PreToolUse; at the top
+// level Claude Code ignores it and the agent never sees the narrowing note.
 type hookSpecific struct {
-	HookEventName string         `json:"hookEventName"`
-	UpdatedInput  map[string]any `json:"updatedInput,omitempty"`
+	HookEventName            string         `json:"hookEventName"`
+	PermissionDecision       string         `json:"permissionDecision,omitempty"`
+	PermissionDecisionReason string         `json:"permissionDecisionReason,omitempty"`
+	UpdatedInput             map[string]any `json:"updatedInput,omitempty"`
+	AdditionalContext        string         `json:"additionalContext,omitempty"`
+}
+
+// hookMinConf is the confidence a located window needs before a Read is narrowed.
+//
+// Narrow only when the chunk distribution is peaked. This gate is measured
+// rather than guessed: across twelve labelled targets in three large files
+// every correct window scored 0.71 or above, and the one window that lost
+// its target scored 0.42. The floor sits between them with margin on both
+// sides — but it rests on a single observed failure, so it is deliberately
+// far above the highest confidence ever seen to fail.
+func hookMinConf() float64 {
+	if v, err := strconv.ParseFloat(strings.TrimSpace(os.Getenv("JEV_HOOK_MIN_CONF")), 64); err == nil && v > 0 {
+		return v
+	}
+	return 0.60
 }
 
 // passThrough emits the empty decision: the read proceeds exactly as written.
@@ -65,8 +86,12 @@ func envInt(name string, def int) int {
 }
 
 func Hook(args []string) error {
+	if len(args) > 0 && args[0] == "goal" {
+		return hookGoal(args[1:])
+	}
 	if len(args) == 0 || args[0] != "read" {
-		return fmt.Errorf("usage: jev hook read   (reads a PreToolUse payload on stdin)")
+		return fmt.Errorf("usage: jev hook read   (reads a PreToolUse payload on stdin)\n" +
+			"       jev hook goal --session <id> <file> <what you need from it>")
 	}
 	// On by default. JEV_HOOK_DISABLE is the escape hatch: one variable turns
 	// every narrowing off without uninstalling anything, which is what you want
@@ -115,9 +140,23 @@ func Hook(args []string) error {
 			len(data)/1024, maxSectionBytes/1024))
 	}
 
-	goal := lastUserMessage(in.TranscriptPath)
+	// A sharper goal the agent recorded after an earlier low-confidence attempt
+	// wins over the user's last message.
+	abs := resolvePath(path, in.CWD)
+	retries := loadRetry(in.SessionID)
+	entry, retrying := retries[abs]
+	goal := entry.Goal
+	if goal == "" {
+		goal = lastUserMessage(in.TranscriptPath)
+	}
 	if len(goal) < 12 {
 		return passThrough("no goal found in the transcript")
+	}
+	// Whatever happens below, a recorded goal is spent by this attempt.
+	if retrying {
+		entry.Goal = ""
+		retries[abs] = entry
+		saveRetry(in.SessionID, retries)
 	}
 
 	client, err := typesafe.New()
@@ -125,21 +164,28 @@ func Hook(args []string) error {
 		return passThrough("no API key")
 	}
 	got, err := locateLine(context.Background(), client, goal, filepath.Base(path), data)
-	if err != nil || got.Line == 0 {
-		return passThrough(fmt.Sprintf("locate failed or found nothing (err=%v, line=%d, exists=%.2f)", err, got.Line, got.Exists))
+	if err != nil {
+		return passThrough(fmt.Sprintf("locate failed (err=%v)", err))
 	}
-	// Narrow only when the chunk distribution is peaked. This gate is measured
-	// rather than guessed: across twelve labelled targets in three large files
-	// every correct window scored 0.71 or above, and the one window that lost
-	// its target scored 0.42. The floor sits between them with margin on both
-	// sides — but it rests on a single observed failure, so it is deliberately
-	// far above the highest confidence ever seen to fail.
-	minConf := 0.60
-	if v, err := strconv.ParseFloat(strings.TrimSpace(os.Getenv("JEV_HOOK_MIN_CONF")), 64); err == nil && v > 0 {
-		minConf = v
+	if minConf := hookMinConf(); got.Line == 0 || got.Conf < minConf {
+		// Ask the agent for a sharper goal, up to maxRetries times per file; the
+		// session id is what ties its answer back to this Read.
+		if _, ok := retryFile(in.SessionID); ok && entry.Attempts < maxRetries &&
+			os.Getenv("JEV_HOOK_NO_RETRY") == "" {
+			entry.Attempts++
+			entry.Goal, entry.Updated = "", time.Now()
+			retries[abs] = entry
+			saveRetry(in.SessionID, retries)
+			return denyForRetry(in.SessionID, abs, goal, got.Conf, entry.Attempts, lines)
+		}
+		delete(retries, abs)
+		saveRetry(in.SessionID, retries)
+		return passThrough(fmt.Sprintf("chunk confidence %.2f is under the %.2f floor (line=%d, retries used=%d)",
+			got.Conf, minConf, got.Line, entry.Attempts))
 	}
-	if got.Conf < minConf {
-		return passThrough(fmt.Sprintf("chunk confidence %.2f is under the %.2f floor", got.Conf, minConf))
+	if retrying {
+		delete(retries, abs)
+		saveRetry(in.SessionID, retries)
 	}
 
 	// A fifth of the file, never under 150 lines. Both numbers are measured.
@@ -171,11 +217,11 @@ func Hook(args []string) error {
 				"offset":    offset,
 				"limit":     window,
 			},
+			AdditionalContext: fmt.Sprintf(
+				"jev narrowed this Read: %s is %d lines, showing %d-%d (match at line %d, confidence %.2f). "+
+					"Read it again with an explicit offset or limit to see any other part — nothing was removed from the file.",
+				filepath.Base(path), lines, offset, offset+window-1, got.Line, got.Conf),
 		},
-		AdditionalContext: fmt.Sprintf(
-			"jev narrowed this Read: %s is %d lines, showing %d-%d (match at line %d, confidence %.2f). "+
-				"Read it again with an explicit offset or limit to see any other part — nothing was removed from the file.",
-			filepath.Base(path), lines, offset, offset+window-1, got.Line, got.Conf),
 	})
 }
 

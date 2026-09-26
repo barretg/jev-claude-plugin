@@ -128,6 +128,14 @@ Nothing was removed from the file on disk. If the part you need is not in the
 window, read it again with an explicit `offset` or `limit` — an explicit window
 is never second-guessed. Measured: 50 narrowed windows, none lost its target.
 
+If jev cannot find the relevant part confidently (under 0.60), the Read is
+**blocked** with a message asking for a sharper goal, up to twice per file. Either
+run the `jev hook goal --session … <file> "<what you need>"` command it gives —
+wait for it to return, then repeat the same Read — or, when the task really needs
+the whole file (review, overview, a sweeping edit), Read it with the explicit
+`offset 1` / `limit N` the message names. After two retries the full file is let
+through.
+
 ## Setup
 
 Needs `OPENROUTER_API_KEY` (or `JEV_TOKEN`) in the environment. If a command reports a missing key,

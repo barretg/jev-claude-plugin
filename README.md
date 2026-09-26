@@ -240,6 +240,16 @@ lines and 80 KB — the case the hook is built for. 15/15 correct answers in eve
 session, and no extra tool calls with jev (15 per session, against 17 without).
 A session that reads fewer large files will see a smaller gap.*
 
+**Sharper-goal retries (this fork).** When the locate scores under the 0.60
+floor, the hook no longer silently returns the whole file. It blocks the Read and
+asks the agent to say what it needs from *this* file, since the user's last
+message is often broader than the agent's current aim. The agent runs
+`jev hook goal --session <id> <file> "<sharper goal>"`, which is stored in
+`~/.cache/jev/hook/<session>.json` (`JEV_STATE_DIR` overrides; 30-min TTL), and
+repeats the Read. After 2 retries per file the full read goes through. When the
+task needs the whole file, the block message names an explicit `offset`/`limit`
+that bypasses jev. `JEV_HOOK_NO_RETRY=1` restores the old pass-through.
+
 ## Benchmarks
 
 Everything below was labelled by agents that read the code themselves and were
