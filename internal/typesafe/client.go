@@ -1,4 +1,8 @@
-// Package typesafe is a minimal client for the TypeSafe System One API.
+// Package typesafe is a minimal client for TypeSafe's Jev decision model.
+//
+// By default it goes through OpenRouter's decisions endpoint, which takes the
+// same request and returns the same answers as TypeSafe's own System One API.
+// JEV_BASE_URL points it anywhere else (e.g. https://api.typesafe.ai/v1/systemone).
 //
 // The API is a single endpoint: you POST some state plus a map of typed
 // questions, and get back one answer per question. The model returns no prose,
@@ -20,23 +24,33 @@ import (
 )
 
 const (
-	endpoint     = "https://api.typesafe.ai/v1/systemone"
-	DefaultModel = "jev-latest"
+	OpenRouterURL = "https://openrouter.ai/api/alpha/decisions"
+	SystemOneURL  = "https://api.typesafe.ai/v1/systemone"
+	DefaultModel  = "jev-latest"
 )
 
-// Key reads the API key. TYPE_SAFE_AI_KEY is the name used in this project's
-// setup; the others are what the official SDKs look for, accepted so a machine
-// that already has one configured works without extra setup.
+// Endpoint is where requests go: JEV_BASE_URL if set, OpenRouter otherwise.
+func Endpoint() string {
+	if v := strings.TrimSpace(os.Getenv("JEV_BASE_URL")); v != "" {
+		return v
+	}
+	return OpenRouterURL
+}
+
+// Key reads the API key. OPENROUTER_API_KEY and JEV_TOKEN are for the default
+// OpenRouter endpoint; the TypeSafe names still work for anyone pointing
+// JEV_BASE_URL at TypeSafe directly.
 func Key() (string, error) {
-	for _, name := range []string{"TYPE_SAFE_AI_KEY", "TYPESAFE_API_KEY", "TYPESAFE_AI_API_KEY"} {
+	for _, name := range []string{"OPENROUTER_API_KEY", "JEV_TOKEN", "TYPE_SAFE_AI_KEY", "TYPESAFE_API_KEY", "TYPESAFE_AI_API_KEY"} {
 		if v := strings.TrimSpace(os.Getenv(name)); v != "" {
 			return v, nil
 		}
 	}
-	return "", fmt.Errorf("no API key: set TYPE_SAFE_AI_KEY in your environment")
+	return "", fmt.Errorf("no API key: set OPENROUTER_API_KEY in your environment")
 }
 
 type Client struct {
+	url   string
 	key   string
 	model string
 	http  *http.Client
@@ -64,6 +78,7 @@ func New() (*Client, error) {
 		model = m
 	}
 	return &Client{
+		url:         Endpoint(),
 		key:         k,
 		model:       model,
 		http:        &http.Client{Timeout: 120 * time.Second},
@@ -148,14 +163,13 @@ type apiError struct {
 func (e *apiError) Error() string {
 	switch e.status {
 	case http.StatusUnauthorized:
-		return "401 unauthorized: the API key was rejected (check TYPE_SAFE_AI_KEY)"
+		return "401 unauthorized: the API key was rejected (check OPENROUTER_API_KEY)"
 	case http.StatusUnprocessableEntity:
 		return fmt.Sprintf("422 the request was malformed: %s", e.body)
 	case http.StatusServiceUnavailable:
 		if strings.Contains(e.body, "model_unavailable") {
-			return "503 model_unavailable: TypeSafe reports the model is down. " +
-				"This is on their side — the key and the request are fine. Retry later, " +
-				"or check status with: curl -H \"Authorization: Bearer $TYPE_SAFE_AI_KEY\" https://api.typesafe.ai/v1/models"
+			return "503 model_unavailable: the provider reports the model is down. " +
+				"This is on their side — the key and the request are fine. Retry later."
 		}
 	}
 	return fmt.Sprintf("HTTP %d: %s", e.status, e.body)
@@ -240,7 +254,7 @@ func (c *Client) do(ctx context.Context, body []byte) (*Response, error) {
 	if err := c.reserve(ctx); err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -249,7 +263,7 @@ func (c *Client) do(ctx context.Context, body []byte) (*Response, error) {
 
 	httpResp, err := c.http.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("calling TypeSafe: %w", err)
+		return nil, fmt.Errorf("calling Jev: %w", err)
 	}
 	defer httpResp.Body.Close()
 
@@ -258,7 +272,7 @@ func (c *Client) do(ctx context.Context, body []byte) (*Response, error) {
 		return nil, fmt.Errorf("reading response: %w", err)
 	}
 	if c.Debug != nil {
-		fmt.Fprintf(c.Debug, "--- POST %s -> %d ---\n%s\n", endpoint, httpResp.StatusCode, raw)
+		fmt.Fprintf(c.Debug, "--- POST %s -> %d ---\n%s\n", c.url, httpResp.StatusCode, raw)
 	}
 	if httpResp.StatusCode != http.StatusOK {
 		return nil, &apiError{status: httpResp.StatusCode, body: truncate(string(raw), 400)}

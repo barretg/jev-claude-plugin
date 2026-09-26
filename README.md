@@ -2,7 +2,7 @@
 
 **Answer questions about a codebase without reading it into the agent's context.**
 
-A Claude Code plugin backed by [TypeSafe](https://typesafe.ai)'s Jev — a small
+A Claude Code plugin backed by [TypeSafe](https://typesafe.ai)'s Jev (reached through OpenRouter in this fork) — a small
 model that returns calibrated probabilities instead of prose, at $0.042 per
 million tokens. It reads your files so the agent doesn't have to.
 
@@ -29,18 +29,30 @@ That repository contains the string `register` **zero times**. The flow is calle
 
 ## Install
 
-Needs Go 1.22+ and a [TypeSafe API key](https://typesafe.ai).
+Needs Go 1.22+ and an [OpenRouter](https://openrouter.ai) API key. This fork
+calls Jev through OpenRouter's decisions endpoint
+(`https://openrouter.ai/api/alpha/decisions`), which takes the same request as
+TypeSafe's own API. Set `JEV_BASE_URL=https://api.typesafe.ai/v1/systemone`
+and `TYPE_SAFE_AI_KEY` to go to TypeSafe directly instead.
+
+`bin/` is not committed, so build before installing — the install copies the
+plugin, binary included, into Claude Code's cache:
 
 ```bash
-claude plugin marketplace add BorisLeMeec/jev
+git clone https://github.com/barretg/jev-claude-plugin && cd jev-claude-plugin
+make build
+claude plugin marketplace add "$PWD"
 claude plugin install jev@jev
 ```
 
-Then, once:
+Then, once, give Claude Code the key (shell profile, or the `env` block of
+`~/.claude/settings.json`):
 
 ```bash
-export TYPE_SAFE_AI_KEY=...   # put this in your shell profile
+export OPENROUTER_API_KEY=...   # JEV_TOKEN is accepted too
 ```
+
+After a rebuild, `make sync` pushes the new binary into the installed copy.
 
 To use `jev` from your own terminal too (the plugin only puts it on `PATH`
 inside Claude Code):

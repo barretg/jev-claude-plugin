@@ -1,7 +1,7 @@
 {
   "name": "jev",
-  "version": "0.1.0",
-  "description": "Answer questions about a codebase without reading it into the agent's context. Semantic code search, per-file audits, and a Read hook that narrows large files \u2014 backed by the TypeSafe Jev model.",
+  "version": "0.1.0-openrouter.1",
+  "description": "Answer questions about a codebase without reading it into the agent's context. Semantic code search, per-file audits, and a Read hook that narrows large files — backed by TypeSafe's Jev model via OpenRouter.",
   "author": {
     "name": "Boris Lemeec"
   },
@@ -12,9 +12,10 @@
     "tokens",
     "typesafe",
     "jev",
-    "hooks"
+    "hooks",
+    "openrouter"
   ],
   "skills": "./skills/",
-  "homepage": "https://github.com/BorisLeMeec/jev",
-  "repository": "https://github.com/BorisLeMeec/jev"
+  "homepage": "https://github.com/barretg/jev-claude-plugin",
+  "repository": "https://github.com/barretg/jev-claude-plugin"
 }

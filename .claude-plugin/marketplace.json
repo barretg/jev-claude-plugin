@@ -2,7 +2,7 @@
   "name": "jev",
   "description": "Out-of-context code search, audits and review for Claude Code, powered by the TypeSafe Jev model.",
   "owner": {
-    "name": "Boris Lemeec"
+    "name": "barretg"
   },
   "plugins": [
     {
